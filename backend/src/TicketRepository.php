@@ -16,13 +16,21 @@ class TicketRepository
         if (!$row) {
             return null;
         }
-        $source = pg_fetch_assoc(query('SELECT id, name FROM sources WHERE id=$1', array($row['source_id'])));
+        
+        $source = null;
+        if ($row['source_id'] !== null) {
+            $sourceRow = pg_fetch_assoc(query('SELECT id, name FROM sources WHERE id=$1', array($row['source_id'])));
+            if ($sourceRow) {
+                $source = array('id' => (int) $sourceRow['id'], 'name' => $sourceRow['name']);
+            }
+        }
+        
         return array(
             'id' => (int) $row['id'],
             'title' => $row['title'],
             'description' => $row['description'],
             'status' => $row['status'],
-            'source' => array('id' => (int) $source['id'], 'name' => $source['name']),
+            'source' => $source, // <-- ТЕПЕРЬ КОРРЕКТНО ВОЗВРАЩАЕТ NULL
             'updated_at' => $row['updated_at'],
         );
     }
@@ -48,17 +56,39 @@ class TicketRepository
         return $rows;
     }
 
-    public function changeSource($id, $sourceId, array $employee)
+   public function changeSource($id, $sourceId, array $employee)
     {
-        $ticket = pg_fetch_assoc(query('SELECT source_id FROM tickets WHERE id=$1', array($id)));
+        // 1. Наличие заявки
+        $ticket = pg_fetch_assoc(query('SELECT id, source_id, status FROM tickets WHERE id=$1', array($id)));
         if (!$ticket) {
             respond(404, array('error' => 'not_found', 'message' => 'Заявка не найдена'));
         }
-        if (!pg_fetch_assoc(query('SELECT id FROM sources WHERE id=$1', array($sourceId)))) {
+        
+        // 2. Запрет архива
+        if ($ticket['status'] === 'archived') {
+            respond(403, array('error' => 'forbidden', 'message' => 'Архивная заявка доступна только для чтения'));
+        }
+        
+        // 3. Корректность источника
+        $source = pg_fetch_assoc(query('SELECT id FROM sources WHERE id=$1', array($sourceId)));
+        if (!$source) {
             respond(400, array('error' => 'invalid_source', 'message' => 'Источник не найден'));
         }
-        query('UPDATE tickets SET source_id=$1, updated_at=clock_timestamp() WHERE id=$2', array($sourceId, $id));
-        query('INSERT INTO ticket_history(ticket_id, employee_id, old_source_id, new_source_id) VALUES($1,$2,$3,$4)', array($id, $employee['id'], $ticket['source_id'], $sourceId));
-        return $this->find($id);
+        
+        // 4. Повторный выбор текущего источника
+        if ((int)$ticket['source_id'] === $sourceId) {
+            return; // Успех без записи в историю
+        }
+        
+        // 5. Атомарное сохранение
+        query('BEGIN');
+        try {
+            query('UPDATE tickets SET source_id=$1, updated_at=clock_timestamp() WHERE id=$2', array($sourceId, $id));
+            query('INSERT INTO ticket_history(ticket_id, employee_id, old_source_id, new_source_id) VALUES($1,$2,$3,$4)', array($id, $employee['id'], $ticket['source_id'], $sourceId));
+            query('COMMIT');
+        } catch (Exception $e) {
+            query('ROLLBACK');
+            throw $e;
+        }
     }
 }

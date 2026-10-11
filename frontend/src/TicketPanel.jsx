@@ -10,36 +10,62 @@ export default function TicketPanel({ employee, selectedId, sources, onChanged }
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  useEffect(() => {
+   useEffect(() => {
     if (!selectedId) {
       setTicket(null);
+      setHistory([]);
+      setSaving(false); // Сбрасываем состояние сохранения при уходе с карточки
       return;
     }
     setLoading(true);
     setError('');
     setMessage('');
+    setSaving(false);
+    
+    let isCurrent = true; // Флаг актуальности запроса
     api(`/tickets/${selectedId}`).then(data => {
-      setTicket(data.ticket);
-      setHistory(data.history);
-      setSourceId(String(data.ticket.source?.id ?? ''));
-    }).catch(error => setError(error.message)).finally(() => setLoading(false));
+      if (isCurrent) {
+        setTicket(data.ticket);
+        setHistory(data.history);
+        setSourceId(String(data.ticket.source?.id ?? ''));
+      }
+    }).catch(error => {
+      if (isCurrent) setError(error.message);
+    }).finally(() => {
+      if (isCurrent) setLoading(false);
+    });
+    
+    return () => {
+      isCurrent = false; // Отменяем обновление состояния, если компонент размонтирован или selectedId изменился
+    };
   }, [selectedId]);
 
   async function save() {
     if (!ticket || saving) return;
+    const currentTicketId = ticket.id;
     setSaving(true);
     setError('');
     setMessage('');
     try {
-      const data = await api(`/tickets/${ticket.id}/source`, { method: 'POST', body: JSON.stringify({ source_id: Number(sourceId) }) });
-      setTicket(data.ticket);
-      setHistory(data.history);
-      setMessage('Источник сохранён');
-      onChanged(data.ticket);
+      const data = await api(`/tickets/${currentTicketId}/source`, { 
+        method: 'POST', 
+        body: JSON.stringify({ source_id: Number(sourceId) }) 
+      });
+      // Обновляем состояние только если пользователь всё ещё на этой же заявке
+      if (currentTicketId === selectedId) {
+        setTicket(data.ticket);
+        setHistory(data.history);
+        setMessage('Источник сохранён');
+        onChanged(data.ticket);
+      }
     } catch (error) {
-      setError(error.message);
+      if (currentTicketId === selectedId) {
+        setError(error.message);
+      }
     } finally {
-      setSaving(false);
+      if (currentTicketId === selectedId) {
+        setSaving(false);
+      }
     }
   }
 
